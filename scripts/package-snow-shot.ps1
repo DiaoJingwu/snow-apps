@@ -19,6 +19,14 @@ Write-Host "PE dependency inspector: $script:DumpbinPath"
 
 $nsisCommand = Get-Command makensis -ErrorAction SilentlyContinue
 if (-not $nsisCommand) {
+    if (Get-Command choco -ErrorAction SilentlyContinue) {
+        Write-Host "makensis not found; installing NSIS via Chocolatey..."
+        & choco install nsis -y --no-progress
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install NSIS via Chocolatey (exit code $LASTEXITCODE)."
+        }
+        $env:Path = "$env:Path;${env:ProgramFiles(x86)}\NSIS"
+    }
     $nsisCandidates = @(
         "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
         "${env:ProgramFiles}\NSIS\makensis.exe"
