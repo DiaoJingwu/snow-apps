@@ -9,6 +9,7 @@ vcpkg_from_github(
     PATCHES
       0028-ffmpeg9-support.patch
       0029-protobuf-caffe-generation.patch
+      0030-disable-mlas-asm-on-windows.patch
 )
 
 vcpkg_download_distfile(CAFFE_PROTO_FILE

@@ -1,0 +1,11 @@
+diff --git a/3rdparty/mlas/CMakeLists.txt b/3rdparty/mlas/CMakeLists.txt
+--- a/3rdparty/mlas/CMakeLists.txt
++++ b/3rdparty/mlas/CMakeLists.txt
+@@ -80,6 +80,6 @@
+ set(MLAS_HAS_ASM FALSE CACHE INTERNAL "" FORCE)
+ check_language(ASM)
+-if(CMAKE_ASM_COMPILER)
++if(CMAKE_ASM_COMPILER AND NOT WIN32)
+   enable_language(ASM)
+   set(MLAS_HAS_ASM TRUE CACHE INTERNAL "" FORCE)
+ elseif(_MLAS_REQUIRES_ASM)
