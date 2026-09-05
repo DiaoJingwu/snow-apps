@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: snow-shot-release-${{ github.ref_name }}
@@ -83,7 +84,45 @@ jobs:
 
       - name: Build, audit, and package statically
         shell: pwsh
-        run: .\scripts\stage-snow-shot-release.ps1
+        run: |
+          & .\scripts\stage-snow-shot-release.ps1 2>&1 | Tee-Object -FilePath build-output.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Report failure diagnostics
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $log = 'build-output.log'
+          if (-not (Test-Path $log)) { Write-Host "::error::build-output.log not found"; exit 0 }
+          $lines = Get-Content $log
+          $patterns = @('error','FAILED:','ninja: build stopped','fatal','Exception','LNK','could not compile')
+          $hit = New-Object System.Collections.Generic.List[string]
+          $seen = @{}
+          for ($i=0; $i -lt $lines.Count; $i++) {
+            foreach ($p in $patterns) {
+              if ($lines[$i] -like "*$p*") {
+                for ($j=[Math]::Max(0,$i-3); $j -le [Math]::Min($lines.Count-1,$i+3); $j++) {
+                  if (-not $seen.ContainsKey($j)) { $seen[$j]=$true; $hit.Add(("{0}: {1}" -f ($j+1), $lines[$j])) }
+                }
+                break
+              }
+            }
+          }
+          $tailStart = [Math]::Max(0, $lines.Count-120)
+          $tail = $lines[$tailStart..($lines.Count-1)]
+          $bodyLines = @('Auto-generated build diagnostics (key error lines + tail of build-output.log).','')
+          if ($hit.Count -gt 0) { $bodyLines += $hit } else { $bodyLines += 'No explicit error-pattern lines matched.' }
+          $bodyLines += ''
+          $bodyLines += '=== TAIL 120 ==='
+          $bodyLines += $tail
+          $content = ($bodyLines -join "`n")
+          if ($content.Length -gt 60000) { $content = $content.Substring($content.Length - 60000) }
+          $payload = @{ title = "Snow Shot build failure diagnostics (auto)"; body = $content } | ConvertTo-Json
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues" -Headers $headers -Body $payload -ContentType 'application/json' | Out-Null
+          Write-Host "Diagnostics issue created."
 
       - name: Verify tag and locate package
         id: package
