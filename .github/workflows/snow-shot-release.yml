@@ -94,35 +94,72 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $log = 'build-output.log'
-          if (-not (Test-Path $log)) { Write-Host "::error::build-output.log not found"; exit 0 }
-          $lines = Get-Content $log
-          $patterns = @('error','FAILED:','ninja: build stopped','fatal','Exception','LNK','could not compile')
-          $hit = New-Object System.Collections.Generic.List[string]
+          $logFile = Get-ChildItem -Path . -Recurse -Filter 'build-output.log' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $logFile) { Write-Host "::error::build-output.log not found"; exit 0 }
+          $raw = @(Get-Content -LiteralPath $logFile.FullName)
+          $total = $raw.Count
+          if ($total -eq 0) { Write-Host "::error::build-output.log is empty"; exit 0 }
+          function Clean([string]$s, [int]$max = 220) {
+            if ($null -eq $s) { return '' }
+            $s = $s -replace "`e\[[0-9;]*[A-Za-z]", ''
+            if ($s.Length -gt $max) { $s = $s.Substring(0, $max) }
+            return $s
+          }
+          $patterns = @('error','FAILED:','ninja: build stopped','fatal','Exception','LNK','could not compile','is not recognized')
+          $hitIdx = New-Object System.Collections.Generic.List[int]
           $seen = @{}
-          for ($i=0; $i -lt $lines.Count; $i++) {
+          for ($i=0; $i -lt $total; $i++) {
             foreach ($p in $patterns) {
-              if ($lines[$i] -like "*$p*") {
-                for ($j=[Math]::Max(0,$i-3); $j -le [Math]::Min($lines.Count-1,$i+3); $j++) {
-                  if (-not $seen.ContainsKey($j)) { $seen[$j]=$true; $hit.Add(("{0}: {1}" -f ($j+1), $lines[$j])) }
+              if ($raw[$i] -like "*$p*") {
+                for ($j=[Math]::Max(0,$i-2); $j -le [Math]::Min($total-1,$i+2); $j++) {
+                  if (-not $seen.ContainsKey($j)) { $seen[$j]=1; $hitIdx.Add($j) }
                 }
                 break
               }
             }
           }
-          $tailStart = [Math]::Max(0, $lines.Count-120)
-          $tail = $lines[$tailStart..($lines.Count-1)]
-          $bodyLines = @('Auto-generated build diagnostics (key error lines + tail of build-output.log).','')
-          if ($hit.Count -gt 0) { $bodyLines += $hit } else { $bodyLines += 'No explicit error-pattern lines matched.' }
-          $bodyLines += ''
-          $bodyLines += '=== TAIL 120 ==='
-          $bodyLines += $tail
-          $content = ($bodyLines -join "`n")
-          if ($content.Length -gt 60000) { $content = $content.Substring($content.Length - 60000) }
-          $payload = @{ title = "Snow Shot build failure diagnostics (auto)"; body = $content } | ConvertTo-Json
-          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
-          Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues" -Headers $headers -Body $payload -ContentType 'application/json' | Out-Null
-          Write-Host "Diagnostics issue created."
+          $sel = @()
+          $sel += @($hitIdx | Select-Object -Last 30)
+          $sel += @([Math]::Max(0,$total-40)..($total-1))
+          $sel = @($sel | Sort-Object -Unique)
+          $n = 0
+          foreach ($idx in $sel) {
+            $t = (Clean $raw[$idx]) -replace "`r", ''
+            if ($n -lt 10) { Write-Host ("::error::L{0}: {1}" -f ($idx+1), $t) }
+            elseif ($n -lt 20) { Write-Host ("::warning::L{0}: {1}" -f ($idx+1), $t) }
+            else { Write-Host ("L{0}: {1}" -f ($idx+1), $t) }
+            $n++
+          }
+          try {
+            $hitsTxt = @($sel | ForEach-Object { "L{0}: {1}" -f ($_+1), (Clean $raw[$_] 300) })
+            $tailTxt = @($raw | Select-Object -Last 250 | ForEach-Object { Clean $_ 300 })
+            $body = "Auto diagnostics. Run $($env:GITHUB_RUN_ID) attempt $($env:GITHUB_RUN_ATTEMPT). Log lines: $total.`n`n### Pattern hits (last clusters)`n" + ($hitsTxt -join "`n") + "`n`n### Tail 250`n" + ($tailTxt -join "`n")
+            if ($body.Length -gt 60000) { $body = $body.Substring(0, 60000) }
+            $payload = @{ title = "Snow Shot build failure diagnostics (auto)"; body = $body } | ConvertTo-Json
+            $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+            Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues" -Headers $headers -Body $payload -ContentType 'application/json' | Out-Null
+            Write-Host "Diagnostics issue created."
+          } catch {
+            Write-Host ("::warning::issue-post-failed: {0}" -f $_.Exception.Message)
+            try {
+              $mini = @{ title = "Snow Shot build failure diagnostics (auto)"; body = "Full POST failed: $($_.Exception.Message). See run annotations and build-output-log artifact." } | ConvertTo-Json
+              Invoke-RestMethod -Method Post -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/issues" -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' } -Body $mini -ContentType 'application/json' | Out-Null
+              Write-Host "Mini diagnostics issue created."
+            } catch {
+              Write-Host ("::warning::mini-issue-failed: {0}" -f $_.Exception.Message)
+            }
+          }
+          exit 0
+
+      - name: Upload build log artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-log
+          path: |
+            build-output.log
+            **/build-output.log
+          if-no-files-found: ignore
 
       - name: Verify tag and locate package
         id: package
